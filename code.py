@@ -8,9 +8,9 @@ import audioio
 from audiocore import RawSample
 import math
 import keypad
+import neopixel
 from adafruit_display_text import label
 from vectorio import Rectangle, Circle
-from adafruit_dotstar import DotStar
 
 # --- Constants ---
 SCREEN_WIDTH = 160
@@ -31,14 +31,15 @@ display = board.DISPLAY
 main_group = displayio.Group()
 display.root_group = main_group
 
-# --- Lives LEDs Setup via hardware SPI pins ---
-NUM_DOTSTARS = 10
-lives_leds = DotStar(board.SCK, board.MOSI, NUM_DOTSTARS, brightness=0.2)
+# --- NeoPixel Lives Indicator ---
+NUM_PIXELS = 5  # onboard NeoPixels
+pixels = neopixel.NeoPixel(board.NEOPIXEL, NUM_PIXELS, brightness=0.2, auto_write=True)
+LIFE_INDICES = [1, 2, 3]  # middle three LEDs
 
-def update_lives_lights(lives):
-    for i in range(NUM_DOTSTARS):
-        lives_leds[i] = (255, 0, 0) if i < lives else (0, 0, 0)
-    lives_leds.show()
+def update_lives_lights(lives, bright=False):
+    pixels.brightness = 1.0 if bright else 0.2
+    for idx_num, idx in enumerate(LIFE_INDICES, start=1):
+        pixels[idx] = (255, 0, 0) if idx_num <= lives else (0, 0, 0)
 
 # --- Status Label ---
 status_label = label.Label(terminalio.FONT, text="Press A to Start", x=30, y=64)
@@ -71,13 +72,15 @@ keys = keypad.ShiftRegisterKeys(
 game_layer = displayio.Group()
 main_group.append(game_layer)
 
-paddle = Rectangle(pixel_shader=displayio.Palette(1), width=PADDLE_WIDTH,
-                   height=PADDLE_HEIGHT,
-                   x=(SCREEN_WIDTH - PADDLE_WIDTH)//2, y=SCREEN_HEIGHT - 10)
+paddle = Rectangle(pixel_shader=displayio.Palette(1),
+                   width=PADDLE_WIDTH, height=PADDLE_HEIGHT,
+                   x=(SCREEN_WIDTH - PADDLE_WIDTH)//2,
+                   y=SCREEN_HEIGHT - 10)
 paddle.pixel_shader[0] = 0xFFFFFF
 game_layer.append(paddle)
 
-ball = Circle(pixel_shader=displayio.Palette(1), radius=BALL_RADIUS,
+ball = Circle(pixel_shader=displayio.Palette(1),
+              radius=BALL_RADIUS,
               x=SCREEN_WIDTH//2, y=SCREEN_HEIGHT//2)
 ball.pixel_shader[0] = 0x00FFFF
 game_layer.append(ball)
@@ -114,7 +117,7 @@ def hide_message():
 
 def breakout_game():
     lives = INITIAL_LIVES
-    update_lives_lights(lives)
+    update_lives_lights(lives, bright=False)
     make_bricks()
     hide_message()
     dx, dy = reset_ball()
@@ -122,43 +125,47 @@ def breakout_game():
     pressed = set()
 
     while True:
-        # Handle all button events
+        # Handle button events
         event = keys.events.get()
         while event:
             if event.pressed:
                 pressed.add(event.key_number)
             elif event.released:
                 if event.key_number == 1:  # B = pause
+                    update_lives_lights(lives, bright=True)
                     show_message("Paused. B to resume.")
                     while True:
                         e = keys.events.get()
                         if e and e.released and e.key_number == 1:
                             hide_message()
+                            update_lives_lights(lives, bright=False)
                             break
                         time.sleep(0.1)
                 pressed.discard(event.key_number)
             event = keys.events.get()
 
-        # Paddle: START (3)=right, SELECT (2)=left
+        # Paddle movement: START(3)=right, SELECT(2)=left
         if 3 in pressed:
             paddle.x = min(SCREEN_WIDTH - PADDLE_WIDTH, paddle.x + PADDLE_SPEED)
         if 2 in pressed:
             paddle.x = max(0, paddle.x - PADDLE_SPEED)
 
-        # Ball movement
+        # Move ball
         ball.x += dx
         ball.y += dy
 
-        # Collisions
+        # Wall collisions
         if ball.x <= 0 or ball.x >= SCREEN_WIDTH - BALL_RADIUS:
             dx = -dx; play_beep()
         if ball.y <= 0:
             dy = -dy; play_beep()
+
+        # Paddle collision
         if (paddle.y - BALL_RADIUS <= ball.y <= paddle.y and
             paddle.x <= ball.x <= paddle.x + PADDLE_WIDTH):
             dy = -dy; play_beep()
 
-        # Brick hits
+        # Brick collisions
         for brick in bricks[:]:
             if (brick.x < ball.x < brick.x + BRICK_WIDTH and
                 brick.y < ball.y < brick.y + BRICK_HEIGHT):
@@ -170,27 +177,31 @@ def breakout_game():
         # Ball missed
         if ball.y > SCREEN_HEIGHT:
             lives -= 1
-            update_lives_lights(lives)
+            update_lives_lights(lives, bright=False)
             if lives > 0:
                 show_message(f"Life lost! {lives} left", 1)
                 dx, dy = reset_ball()
                 continue
             else:
+                update_lives_lights(0, bright=False)
                 show_message(f"Game Over! Score: {score}. A to restart")
                 while True:
                     e = keys.events.get()
                     if e and e.released and e.key_number == 0:
-                        for b in bricks: game_layer.remove(b)
+                        for b in bricks:
+                            game_layer.remove(b)
                         bricks.clear()
                         return
                     time.sleep(0.1)
 
-        # Level up
+        # Level cleared
         if not bricks:
+            update_lives_lights(lives, bright=True)
             show_message(f"Score: {score}! Level up", 1)
-            dx, dy = reset_ball()
             make_bricks()
             hide_message()
+            update_lives_lights(lives, bright=False)
+            dx, dy = reset_ball()
             continue
 
         display.refresh()
@@ -199,7 +210,7 @@ def breakout_game():
 # --- Main Loop ---
 while True:
     show_message("Press A to Start")
-    update_lives_lights(INITIAL_LIVES)
+    update_lives_lights(INITIAL_LIVES, bright=False)
     while True:
         evt = keys.events.get()
         if evt and evt.released and evt.key_number == 0:
